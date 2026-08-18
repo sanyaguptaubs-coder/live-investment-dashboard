@@ -4,7 +4,20 @@ import numpy as np
 import plotly.express as px
 
 from datetime import datetime, timedelta
+
 from data_fetcher import get_stock_data
+
+from database import (
+    initialize_database,
+    admin_exists,
+    create_user,
+    authenticate_user,
+    get_all_users,
+    delete_user,
+    reset_password,
+    get_user_settings,
+    save_user_settings
+)
 
 
 # ============================================================
@@ -75,10 +88,6 @@ st.markdown(
         color: white;
     }
 
-    hr {
-        border-color: #DDE3EA;
-    }
-
     details {
         background-color: white;
         border: 1px solid #E1E7EF;
@@ -93,106 +102,480 @@ st.markdown(
 
 
 # ============================================================
-# DEFAULT COMPANIES
+# INITIALIZE DATABASE
 # ============================================================
 
-DEFAULT_COMPANIES = {
-    "Reliance Industries": "RELIANCE.NS",
-    "TCS": "TCS.NS",
-    "Infosys": "INFY.NS",
-    "HDFC Bank": "HDFCBANK.NS",
-    "ICICI Bank": "ICICIBANK.NS",
-    "State Bank of India": "SBIN.NS",
-    "ITC": "ITC.NS",
-    "Larsen & Toubro": "LT.NS",
-    "Bharti Airtel": "BHARTIARTL.NS",
-    "Axis Bank": "AXISBANK.NS",
-    "Hindustan Unilever": "HINDUNILVR.NS",
-    "Maruti Suzuki": "MARUTI.NS",
-    "Sun Pharma": "SUNPHARMA.NS",
-    "Tata Motors": "TATAMOTORS.NS",
-    "Adani Enterprises": "ADANIENT.NS"
-}
+initialize_database()
 
 
 # ============================================================
 # SESSION STATE
 # ============================================================
 
-if "companies_df" not in st.session_state:
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
 
-    st.session_state.companies_df = pd.DataFrame({
-        "Company": list(DEFAULT_COMPANIES.keys()),
-        "Ticker": list(DEFAULT_COMPANIES.values())
-    })
-
-
-if "debt_name" not in st.session_state:
-    st.session_state.debt_name = "Bharat Bond ETF"
-
-
-if "debt_ticker" not in st.session_state:
-    st.session_state.debt_ticker = "EBBETF0433.NS"
+if "current_user" not in st.session_state:
+    st.session_state.current_user = None
 
 
 # ============================================================
-# BENCHMARK
+# FIRST-TIME ADMIN ACCOUNT CREATION
 # ============================================================
 
-benchmark = "^NSEI"
+if not admin_exists():
+
+    st.title("👑 Create Administrator Account")
+
+    st.write(
+        "This is the first time the dashboard is being used. "
+        "Create your administrator account."
+    )
+
+    with st.form("create_first_admin"):
+
+        admin_username = st.text_input(
+            "Admin Username"
+        )
+
+        admin_password = st.text_input(
+            "Admin Password",
+            type="password"
+        )
+
+        confirm_admin_password = st.text_input(
+            "Confirm Password",
+            type="password"
+        )
+
+        create_admin_button = st.form_submit_button(
+            "Create Administrator Account",
+            use_container_width=True
+        )
+
+    if create_admin_button:
+
+        if admin_password != confirm_admin_password:
+
+            st.error(
+                "Passwords do not match."
+            )
+
+        else:
+
+            success, message = create_user(
+                admin_username,
+                admin_password,
+                is_admin=True
+            )
+
+            if success:
+
+                st.success(message)
+
+                st.info(
+                    "Administrator account created successfully. "
+                    "Please refresh or continue to log in."
+                )
+
+                st.rerun()
+
+            else:
+
+                st.error(message)
+
+    st.stop()
+
+
+# ============================================================
+# LOGIN SCREEN
+# ============================================================
+
+if not st.session_state.logged_in:
+
+    st.title("📊 Investment Analytics Dashboard")
+
+    st.subheader(
+        "Secure Multi-User Investment Analytics Platform"
+    )
+
+    st.write(
+        "Log in using your unique username and password."
+    )
+
+    st.divider()
+
+    left, center, right = st.columns([1, 2, 1])
+
+    with center:
+
+        with st.form("login_form"):
+
+            username = st.text_input(
+                "Username"
+            )
+
+            password = st.text_input(
+                "Password",
+                type="password"
+            )
+
+            login_button = st.form_submit_button(
+                "🔐 Login",
+                use_container_width=True
+            )
+
+        if login_button:
+
+            user = authenticate_user(
+                username,
+                password
+            )
+
+            if user is not None:
+
+                st.session_state.logged_in = True
+
+                st.session_state.current_user = user
+
+                st.session_state.loaded_user_id = None
+
+                st.success(
+                    f"Welcome, {user['username']}!"
+                )
+
+                st.rerun()
+
+            else:
+
+                st.error(
+                    "Invalid username or password."
+                )
+
+    st.stop()
+
+
+# ============================================================
+# CURRENT USER
+# ============================================================
+
+current_user = st.session_state.current_user
+
+current_user_id = current_user["id"]
+
+
+# ============================================================
+# LOAD PRIVATE USER SETTINGS
+# ============================================================
+
+if (
+    "loaded_user_id"
+    not in st.session_state
+    or
+    st.session_state.loaded_user_id
+    != current_user_id
+):
+
+    user_settings = get_user_settings(
+        current_user_id
+    )
+
+    companies_dict = user_settings.get(
+        "companies",
+        {}
+    )
+
+    st.session_state.companies_df = pd.DataFrame(
+        list(companies_dict.items()),
+        columns=[
+            "Company",
+            "Ticker"
+        ]
+    )
+
+    st.session_state.debt_name = (
+        user_settings.get(
+            "debt_name",
+            "Bharat Bond ETF"
+        )
+    )
+
+    st.session_state.debt_ticker = (
+        user_settings.get(
+            "debt_ticker",
+            "EBBETF0433.NS"
+        )
+    )
+
+    st.session_state.benchmark_name = (
+        user_settings.get(
+            "benchmark_name",
+            "NIFTY 50"
+        )
+    )
+
+    st.session_state.benchmark_ticker = (
+        user_settings.get(
+            "benchmark_ticker",
+            "^NSEI"
+        )
+    )
+
+    st.session_state.risk_free_rate = (
+        float(
+            user_settings.get(
+                "risk_free_rate",
+                7.0
+            )
+        )
+    )
+
+    st.session_state.period = (
+        user_settings.get(
+            "period",
+            "1 Year"
+        )
+    )
+
+    st.session_state.portfolio_amount = (
+        float(
+            user_settings.get(
+                "portfolio_amount",
+                100000
+            )
+        )
+    )
+
+    st.session_state.portfolio_assets = (
+        user_settings.get(
+            "portfolio_assets",
+            []
+        )
+    )
+
+    st.session_state.portfolio_weights = (
+        user_settings.get(
+            "portfolio_weights",
+            {}
+        )
+    )
+
+    st.session_state.loaded_user_id = (
+        current_user_id
+    )
+
+
+# ============================================================
+# SAVE USER SETTINGS FUNCTION
+# ============================================================
+
+def save_current_user_settings():
+
+    companies_dictionary = dict(
+        zip(
+            st.session_state.companies_df[
+                "Company"
+            ],
+            st.session_state.companies_df[
+                "Ticker"
+            ]
+        )
+    )
+
+    settings = {
+
+        "companies":
+            companies_dictionary,
+
+        "debt_name":
+            st.session_state.debt_name,
+
+        "debt_ticker":
+            st.session_state.debt_ticker,
+
+        "benchmark_name":
+            st.session_state.benchmark_name,
+
+        "benchmark_ticker":
+            st.session_state.benchmark_ticker,
+
+        "risk_free_rate":
+            st.session_state.risk_free_rate,
+
+        "period":
+            st.session_state.period,
+
+        "portfolio_amount":
+            st.session_state.portfolio_amount,
+
+        "portfolio_assets":
+            st.session_state.portfolio_assets,
+
+        "portfolio_weights":
+            st.session_state.portfolio_weights
+    }
+
+    return save_user_settings(
+        current_user_id,
+        settings
+    )
 
 
 # ============================================================
 # SIDEBAR
 # ============================================================
 
+period_options = [
+    "1 Month",
+    "3 Months",
+    "6 Months",
+    "1 Year",
+    "3 Years",
+    "5 Years",
+    "All Data"
+]
+
 with st.sidebar:
 
     st.title("📊 Dashboard")
 
-    st.caption(
-        "Equity • Debt • Risk • Return • Portfolio"
+    st.success(
+        f"👤 {current_user['username']}"
     )
+
+    if current_user["is_admin"]:
+
+        st.caption(
+            "👑 Administrator Account"
+        )
+
+    else:
+
+        st.caption(
+            "🔒 Private User Account"
+        )
 
     st.divider()
 
-    st.subheader("⚙️ Analysis Settings")
+    st.subheader(
+        "⚙️ Analysis Settings"
+    )
+
+    current_period = (
+        st.session_state.period
+    )
+
+    if current_period not in period_options:
+        current_period = "1 Year"
 
     period = st.selectbox(
         "Analysis Period",
-        [
-            "1 Month",
-            "3 Months",
-            "6 Months",
-            "1 Year",
-            "3 Years",
-            "5 Years",
-            "All Data"
-        ]
+        period_options,
+        index=period_options.index(
+            current_period
+        )
     )
+
+    st.session_state.period = period
 
     risk_free_rate = st.number_input(
         "Risk-Free Rate (%)",
         min_value=0.0,
         max_value=25.0,
-        value=7.0,
+        value=float(
+            st.session_state.risk_free_rate
+        ),
         step=0.5
+    )
+
+    st.session_state.risk_free_rate = (
+        risk_free_rate
     )
 
     st.divider()
 
-    st.subheader("📁 Current Assets")
+    st.subheader(
+        "📈 Current Benchmark"
+    )
+
+    st.write(
+        st.session_state.benchmark_name
+    )
+
+    st.caption(
+        st.session_state.benchmark_ticker
+    )
+
+    st.divider()
+
+    st.subheader(
+        "📁 Current Assets"
+    )
 
     st.metric(
         "Equity Companies",
-        len(st.session_state.companies_df)
+        len(
+            st.session_state.companies_df
+        )
     )
 
-    st.write("Debt Instrument:")
+    st.write(
+        "Debt Instrument:"
+    )
 
     st.caption(
         st.session_state.debt_name
     )
+
+    st.divider()
+
+    if st.button(
+        "💾 Save My Settings",
+        use_container_width=True
+    ):
+
+        success, message = (
+            save_current_user_settings()
+        )
+
+        if success:
+            st.success(
+                "Your private settings have been saved."
+            )
+        else:
+            st.error(message)
+
+    st.divider()
+
+    if st.button(
+        "🚪 Logout",
+        use_container_width=True
+    ):
+
+        keys_to_remove = [
+            "logged_in",
+            "current_user",
+            "loaded_user_id",
+            "companies_df",
+            "debt_name",
+            "debt_ticker",
+            "benchmark_name",
+            "benchmark_ticker",
+            "risk_free_rate",
+            "period",
+            "portfolio_results",
+            "comparison_results"
+        ]
+
+        for key in keys_to_remove:
+
+            if key in st.session_state:
+                del st.session_state[key]
+
+        st.session_state.logged_in = False
+        st.session_state.current_user = None
+
+        st.rerun()
 
 
 # ============================================================
@@ -224,7 +607,7 @@ else:
 
 
 # ============================================================
-# HELPER FUNCTION
+# HELPER FUNCTIONS
 # ============================================================
 
 def filter_data_by_period(data):
@@ -233,7 +616,9 @@ def filter_data_by_period(data):
         return pd.DataFrame()
 
     if start_date is not None:
-        return data[data.index >= start_date].copy()
+        return data[
+            data.index >= start_date
+        ].copy()
 
     return data.copy()
 
@@ -248,7 +633,6 @@ def get_close_series(data, name):
 
     close = data["Close"]
 
-    # Handles Yahoo Finance MultiIndex columns
     if isinstance(close, pd.DataFrame):
         close = close.iloc[:, 0]
 
@@ -266,75 +650,280 @@ def get_close_series(data, name):
 # DASHBOARD HEADER
 # ============================================================
 
-st.title("📊 Investment Analytics Dashboard")
+st.title(
+    "📊 Investment Analytics Dashboard"
+)
 
 st.subheader(
     "Equity • Risk • Return • Debt • Portfolio Analysis"
 )
 
 st.write(
-    "Analyze company performance, compare investments, "
-    "measure risk-adjusted returns, evaluate debt instruments "
-    "and build your own investment portfolio."
+    f"Welcome, **{current_user['username']}**. "
+    "Your companies, benchmark, debt instrument and "
+    "settings are private to your account."
 )
 
 st.divider()
 
 
 # ============================================================
+# ADMIN PANEL
+# ============================================================
+
+if current_user["is_admin"]:
+
+    with st.expander(
+        "👑 Admin Panel — Manage User Accounts"
+    ):
+
+        st.subheader(
+            "➕ Create New User"
+        )
+
+        with st.form(
+            "create_user_form",
+            clear_on_submit=True
+        ):
+
+            new_username = st.text_input(
+                "Unique Username"
+            )
+
+            new_password = st.text_input(
+                "Password",
+                type="password"
+            )
+
+            confirm_password = st.text_input(
+                "Confirm Password",
+                type="password"
+            )
+
+            create_account = (
+                st.form_submit_button(
+                    "Create Account"
+                )
+            )
+
+        if create_account:
+
+            if new_password != confirm_password:
+
+                st.error(
+                    "Passwords do not match."
+                )
+
+            else:
+
+                success, message = create_user(
+                    new_username,
+                    new_password,
+                    is_admin=False
+                )
+
+                if success:
+                    st.success(message)
+                else:
+                    st.error(message)
+
+        st.divider()
+
+        st.subheader(
+            "👥 Existing Users"
+        )
+
+        users = get_all_users()
+
+        users_dataframe = pd.DataFrame(
+            [
+                {
+                    "ID": user["id"],
+                    "Username": user["username"],
+                    "Administrator":
+                        "Yes"
+                        if user["is_admin"]
+                        else "No",
+                    "Created":
+                        user["created_at"]
+                }
+                for user in users
+            ]
+        )
+
+        st.dataframe(
+            users_dataframe,
+            use_container_width=True
+        )
+
+        non_admin_users = [
+            user
+            for user in users
+            if not user["is_admin"]
+        ]
+
+        if non_admin_users:
+
+            st.divider()
+
+            st.subheader(
+                "🔑 Reset User Password"
+            )
+
+            reset_user = st.selectbox(
+                "Select User",
+                non_admin_users,
+                format_func=lambda x:
+                    x["username"],
+                key="reset_user"
+            )
+
+            new_user_password = st.text_input(
+                "New Password",
+                type="password",
+                key="new_user_password"
+            )
+
+            if st.button(
+                "Update Password"
+            ):
+
+                success, message = reset_password(
+                    reset_user["id"],
+                    new_user_password
+                )
+
+                if success:
+                    st.success(message)
+                else:
+                    st.error(message)
+
+            st.divider()
+
+            st.subheader(
+                "🗑️ Delete User"
+            )
+
+            delete_selected_user = st.selectbox(
+                "Select User to Delete",
+                non_admin_users,
+                format_func=lambda x:
+                    x["username"],
+                key="delete_selected_user"
+            )
+
+            confirm_delete = st.checkbox(
+                "I understand that this will permanently "
+                "delete this user's saved settings."
+            )
+
+            if st.button(
+                "Delete Selected User"
+            ):
+
+                if confirm_delete:
+
+                    success, message = delete_user(
+                        delete_selected_user["id"]
+                    )
+
+                    if success:
+                        st.success(message)
+                        st.rerun()
+                    else:
+                        st.error(message)
+
+                else:
+
+                    st.warning(
+                        "Please confirm deletion first."
+                    )
+
+
+# ============================================================
 # COMPANY MANAGEMENT
 # ============================================================
 
-with st.expander("⚙️ Manage Companies"):
+with st.expander(
+    "⚙️ Manage Companies"
+):
 
     st.write(
-        "Add new companies, remove existing companies, "
-        "or change their Yahoo Finance tickers."
+        "Add, remove or edit companies and their "
+        "Yahoo Finance tickers."
     )
 
     edited_companies = st.data_editor(
         st.session_state.companies_df,
         num_rows="dynamic",
-        use_container_width=True
+        use_container_width=True,
+        key="company_editor"
     )
 
-    if st.button("💾 Save Company Changes"):
+    if st.button(
+        "💾 Save Company Changes"
+    ):
 
-        edited_companies = edited_companies.dropna()
-
-        edited_companies["Company"] = (
-            edited_companies["Company"]
-            .astype(str)
-            .str.strip()
+        edited_companies = (
+            edited_companies.dropna()
         )
 
-        edited_companies["Ticker"] = (
-            edited_companies["Ticker"]
-            .astype(str)
-            .str.strip()
-            .str.upper()
-        )
+        if not edited_companies.empty:
 
-        edited_companies = edited_companies[
-            (edited_companies["Company"] != "")
-            &
-            (edited_companies["Ticker"] != "")
-        ]
+            edited_companies["Company"] = (
+                edited_companies["Company"]
+                .astype(str)
+                .str.strip()
+            )
+
+            edited_companies["Ticker"] = (
+                edited_companies["Ticker"]
+                .astype(str)
+                .str.strip()
+                .str.upper()
+            )
+
+            edited_companies = (
+                edited_companies[
+                    (
+                        edited_companies[
+                            "Company"
+                        ] != ""
+                    )
+                    &
+                    (
+                        edited_companies[
+                            "Ticker"
+                        ] != ""
+                    )
+                ]
+            )
 
         st.session_state.companies_df = (
-            edited_companies.reset_index(drop=True)
+            edited_companies.reset_index(
+                drop=True
+            )
         )
 
-        st.success("Companies updated successfully.")
+        success, message = (
+            save_current_user_settings()
+        )
+
+        if success:
+            st.success(
+                "Your private company list has been saved."
+            )
 
         st.rerun()
 
 
 # ============================================================
-# DEBT INSTRUMENT CUSTOMIZATION
+# DEBT INSTRUMENT
 # ============================================================
 
-with st.expander("💰 Customize Debt Instrument"):
+with st.expander(
+    "💰 Customize Debt Instrument"
+):
 
     new_debt_name = st.text_input(
         "Debt Instrument Name",
@@ -346,7 +935,9 @@ with st.expander("💰 Customize Debt Instrument"):
         value=st.session_state.debt_ticker
     )
 
-    if st.button("💾 Save Debt Instrument"):
+    if st.button(
+        "💾 Save Debt Instrument"
+    ):
 
         if (
             new_debt_name.strip() != ""
@@ -362,8 +953,10 @@ with st.expander("💰 Customize Debt Instrument"):
                 new_debt_ticker.strip().upper()
             )
 
+            save_current_user_settings()
+
             st.success(
-                "Debt instrument updated successfully."
+                "Debt instrument saved successfully."
             )
 
             st.rerun()
@@ -376,10 +969,130 @@ with st.expander("💰 Customize Debt Instrument"):
 
 
 # ============================================================
+# BENCHMARK CUSTOMIZATION
+# ============================================================
+
+with st.expander(
+    "📈 Customize Benchmark"
+):
+
+    benchmark_options = {
+        "NIFTY 50": "^NSEI",
+        "SENSEX": "^BSESN",
+        "NIFTY Bank": "^NSEBANK",
+        "NIFTY IT": "^CNXIT",
+        "S&P 500": "^GSPC",
+        "NASDAQ Composite": "^IXIC",
+        "Dow Jones": "^DJI",
+        "Custom Benchmark": ""
+    }
+
+    current_benchmark_name = (
+        st.session_state.benchmark_name
+    )
+
+    if (
+        current_benchmark_name
+        in benchmark_options
+    ):
+        benchmark_index = list(
+            benchmark_options.keys()
+        ).index(
+            current_benchmark_name
+        )
+    else:
+        benchmark_index = list(
+            benchmark_options.keys()
+        ).index(
+            "Custom Benchmark"
+        )
+
+    selected_benchmark_option = (
+        st.selectbox(
+            "Select Benchmark",
+            list(
+                benchmark_options.keys()
+            ),
+            index=benchmark_index
+        )
+    )
+
+    if (
+        selected_benchmark_option
+        == "Custom Benchmark"
+    ):
+
+        new_benchmark_name = st.text_input(
+            "Custom Benchmark Name",
+            value=(
+                st.session_state
+                .benchmark_name
+            )
+        )
+
+        new_benchmark_ticker = st.text_input(
+            "Yahoo Finance Benchmark Ticker",
+            value=(
+                st.session_state
+                .benchmark_ticker
+            )
+        )
+
+    else:
+
+        new_benchmark_name = (
+            selected_benchmark_option
+        )
+
+        new_benchmark_ticker = (
+            benchmark_options[
+                selected_benchmark_option
+            ]
+        )
+
+    if st.button(
+        "💾 Save Benchmark"
+    ):
+
+        if (
+            new_benchmark_name.strip() != ""
+            and
+            new_benchmark_ticker.strip() != ""
+        ):
+
+            st.session_state.benchmark_name = (
+                new_benchmark_name.strip()
+            )
+
+            st.session_state.benchmark_ticker = (
+                new_benchmark_ticker
+                .strip()
+                .upper()
+            )
+
+            save_current_user_settings()
+
+            st.success(
+                "Benchmark updated successfully."
+            )
+
+            st.rerun()
+
+        else:
+
+            st.error(
+                "Please enter both benchmark name "
+                "and ticker."
+            )
+
+
+# ============================================================
 # COMPANY DICTIONARY
 # ============================================================
 
-company_df = st.session_state.companies_df.copy()
+company_df = (
+    st.session_state.companies_df.copy()
+)
 
 company_df = company_df.dropna()
 
@@ -397,9 +1110,13 @@ company_df["Ticker"] = (
 )
 
 company_df = company_df[
-    (company_df["Company"] != "")
+    (
+        company_df["Company"] != ""
+    )
     &
-    (company_df["Ticker"] != "")
+    (
+        company_df["Ticker"] != ""
+    )
 ]
 
 companies = dict(
@@ -408,7 +1125,6 @@ companies = dict(
         company_df["Ticker"]
     )
 )
-
 
 if len(companies) == 0:
 
@@ -436,33 +1152,53 @@ with col2:
 
     st.metric(
         "Benchmark",
-        "NIFTY 50"
+        st.session_state.benchmark_name
     )
 
 
 ticker = companies[selected_company]
 
-debt_instrument_name = st.session_state.debt_name
+debt_instrument_name = (
+    st.session_state.debt_name
+)
 
-debt_instrument_ticker = st.session_state.debt_ticker
+debt_instrument_ticker = (
+    st.session_state.debt_ticker
+)
+
+benchmark = (
+    st.session_state.benchmark_ticker
+)
+
+benchmark_name = (
+    st.session_state.benchmark_name
+)
 
 
 # ============================================================
-# FETCH MAIN DATA
+# FETCH MARKET DATA
 # ============================================================
 
-with st.spinner("Fetching live market data..."):
+with st.spinner(
+    "Fetching live market data..."
+):
 
-    data = get_stock_data(ticker)
+    data = get_stock_data(
+        ticker
+    )
 
-    benchmark_data = get_stock_data(benchmark)
+    benchmark_data = get_stock_data(
+        benchmark
+    )
 
     debt_data = get_stock_data(
         debt_instrument_ticker
     )
 
 
-filtered_data = filter_data_by_period(data)
+filtered_data = filter_data_by_period(
+    data
+)
 
 filtered_benchmark = filter_data_by_period(
     benchmark_data
@@ -474,7 +1210,7 @@ filtered_debt = filter_data_by_period(
 
 
 # ============================================================
-# VALIDATE MAIN DATA
+# VALIDATE DATA
 # ============================================================
 
 company_close = get_close_series(
@@ -484,7 +1220,7 @@ company_close = get_close_series(
 
 benchmark_close = get_close_series(
     filtered_benchmark,
-    "NIFTY 50"
+    benchmark_name
 )
 
 debt_close = get_close_series(
@@ -492,20 +1228,19 @@ debt_close = get_close_series(
     debt_instrument_name
 )
 
-
 if company_close is None:
 
     st.error(
-        "Insufficient data for selected company."
+        "Insufficient data for the selected company."
     )
 
     st.stop()
 
-
 if benchmark_close is None:
 
     st.error(
-        "Insufficient benchmark data."
+        f"Insufficient data for benchmark: "
+        f"{benchmark_name}"
     )
 
     st.stop()
@@ -527,16 +1262,22 @@ first_price = float(
     company_close.iloc[0]
 )
 
-
 daily_return = (
-    (latest_price - previous_price)
+    (
+        latest_price
+        -
+        previous_price
+    )
     /
     previous_price
 ) * 100
 
-
 overall_return = (
-    (latest_price - first_price)
+    (
+        latest_price
+        -
+        first_price
+    )
     /
     first_price
 ) * 100
@@ -550,27 +1291,33 @@ benchmark_latest = float(
     benchmark_close.iloc[-1]
 )
 
-
 benchmark_return = (
-    (benchmark_latest - benchmark_first)
+    (
+        benchmark_latest
+        -
+        benchmark_first
+    )
     /
     benchmark_first
 ) * 100
 
 
 # ============================================================
-# BETA CALCULATION
+# BETA
 # ============================================================
 
 aligned_data = pd.concat(
     [
-        company_close.rename("Company"),
-        benchmark_close.rename("Market")
+        company_close.rename(
+            "Company"
+        ),
+        benchmark_close.rename(
+            "Market"
+        )
     ],
     axis=1,
     join="inner"
 ).dropna()
-
 
 company_returns = (
     aligned_data["Company"]
@@ -584,21 +1331,22 @@ market_returns = (
     .dropna()
 )
 
-
 aligned_returns = pd.concat(
     [
-        company_returns.rename("Company"),
-        market_returns.rename("Market")
+        company_returns.rename(
+            "Company"
+        ),
+        market_returns.rename(
+            "Market"
+        )
     ],
     axis=1,
     join="inner"
 ).dropna()
 
-
 market_variance = (
     aligned_returns["Market"].var()
 )
-
 
 if market_variance != 0:
 
@@ -625,7 +1373,6 @@ daily_returns = (
     .dropna()
 )
 
-
 volatility = (
     daily_returns.std()
     *
@@ -645,9 +1392,7 @@ total_days = (
     company_close.index[0]
 ).days
 
-
 total_years = total_days / 365
-
 
 if total_years > 0:
 
@@ -669,7 +1414,7 @@ else:
 
 
 # ============================================================
-# MARKET ANNUALIZED RETURN
+# BENCHMARK ANNUALIZED RETURN
 # ============================================================
 
 benchmark_days = (
@@ -678,9 +1423,9 @@ benchmark_days = (
     benchmark_close.index[0]
 ).days
 
-
-benchmark_years = benchmark_days / 365
-
+benchmark_years = (
+    benchmark_days / 365
+)
 
 if benchmark_years > 0:
 
@@ -698,12 +1443,18 @@ if benchmark_years > 0:
 
 else:
 
-    annualized_market_return = benchmark_return
+    annualized_market_return = (
+        benchmark_return
+    )
 
 
 # ============================================================
-# SHARPE RATIO
+# RISK METRICS
 # ============================================================
+
+risk_free_rate = (
+    st.session_state.risk_free_rate
+)
 
 if volatility != 0:
 
@@ -718,10 +1469,6 @@ else:
     sharpe_ratio = 0
 
 
-# ============================================================
-# TREYNOR RATIO
-# ============================================================
-
 if beta != 0:
 
     treynor_ratio = (
@@ -735,10 +1482,6 @@ else:
     treynor_ratio = 0
 
 
-# ============================================================
-# CAPM + JENSEN'S ALPHA
-# ============================================================
-
 expected_return = (
     risk_free_rate
     +
@@ -750,7 +1493,6 @@ expected_return = (
         risk_free_rate
     )
 )
-
 
 alpha = (
     annualized_return
@@ -769,7 +1511,6 @@ debt_volatility = 0
 debt_sharpe = 0
 debt_latest = 0
 
-
 if debt_close is not None:
 
     debt_latest = float(
@@ -779,7 +1520,6 @@ if debt_close is not None:
     debt_first = float(
         debt_close.iloc[0]
     )
-
 
     debt_return = (
         (
@@ -791,13 +1531,11 @@ if debt_close is not None:
         debt_first
     ) * 100
 
-
     debt_daily_returns = (
         debt_close
         .pct_change()
         .dropna()
     )
-
 
     debt_volatility = (
         debt_daily_returns.std()
@@ -807,16 +1545,13 @@ if debt_close is not None:
         100
     )
 
-
     debt_days = (
         debt_close.index[-1]
         -
         debt_close.index[0]
     ).days
 
-
     debt_years = debt_days / 365
-
 
     if debt_years > 0:
 
@@ -834,8 +1569,9 @@ if debt_close is not None:
 
     else:
 
-        debt_annualized_return = debt_return
-
+        debt_annualized_return = (
+            debt_return
+        )
 
     if debt_volatility != 0:
 
@@ -847,12 +1583,14 @@ if debt_close is not None:
 
 
 # ============================================================
-# NAVIGATION LABELS
+# NAVIGATION
 # ============================================================
 
 st.divider()
 
-nav1, nav2, nav3, nav4, nav5, nav6 = st.columns(6)
+nav1, nav2, nav3, nav4, nav5, nav6 = (
+    st.columns(6)
+)
 
 with nav1:
     st.caption("📊 Overview")
@@ -882,10 +1620,11 @@ st.divider()
 st.header("📊 Overview")
 
 st.write(
-    f"Performance summary for **{selected_company}** "
-    f"during the selected **{period}** period."
+    f"Performance summary for "
+    f"**{selected_company}** "
+    f"during the selected "
+    f"**{period}** period."
 )
-
 
 c1, c2, c3, c4 = st.columns(4)
 
@@ -905,13 +1644,13 @@ c3.metric(
 )
 
 c4.metric(
-    "NIFTY 50 Return",
+    f"{benchmark_name} Return",
     f"{benchmark_return:.2f}%"
 )
 
-
-st.subheader("Risk & Performance")
-
+st.subheader(
+    "Risk & Performance"
+)
 
 c5, c6, c7, c8, c9 = st.columns(5)
 
@@ -940,7 +1679,6 @@ c9.metric(
     f"{alpha:.2f}%"
 )
 
-
 c10, c11 = st.columns(2)
 
 c10.metric(
@@ -953,7 +1691,6 @@ c11.metric(
     f"{expected_return:.2f}%"
 )
 
-
 st.divider()
 
 
@@ -963,12 +1700,12 @@ st.divider()
 
 st.header("📈 Company Analysis")
 
-
-price_chart = pd.DataFrame({
-    "Date": company_close.index,
-    "Close Price": company_close.values
-})
-
+price_chart = pd.DataFrame(
+    {
+        "Date": company_close.index,
+        "Close Price": company_close.values
+    }
+)
 
 fig_price = px.line(
     price_chart,
@@ -988,59 +1725,60 @@ st.plotly_chart(
 
 
 # ============================================================
-# COMPANY VS NIFTY 50
+# COMPANY VS BENCHMARK
 # ============================================================
 
 comparison_data = pd.concat(
     [
-        company_close.rename(selected_company),
-        benchmark_close.rename("NIFTY 50")
+        company_close.rename(
+            selected_company
+        ),
+        benchmark_close.rename(
+            benchmark_name
+        )
     ],
     axis=1,
     join="inner"
 ).dropna()
 
+if len(comparison_data) > 1:
 
-normalized = (
-    comparison_data
-    /
-    comparison_data.iloc[0]
-) * 100
+    normalized = (
+        comparison_data
+        /
+        comparison_data.iloc[0]
+    ) * 100
 
+    normalized = normalized.reset_index()
 
-normalized = normalized.reset_index()
+    normalized = normalized.rename(
+        columns={
+            normalized.columns[0]: "Date"
+        }
+    )
 
-normalized = normalized.rename(
-    columns={
-        normalized.columns[0]: "Date"
-    }
-)
+    normalized_long = normalized.melt(
+        id_vars="Date",
+        var_name="Investment",
+        value_name="Growth"
+    )
 
+    fig_growth = px.line(
+        normalized_long,
+        x="Date",
+        y="Growth",
+        color="Investment",
+        title="Growth of ₹100 Investment"
+    )
 
-normalized_long = normalized.melt(
-    id_vars="Date",
-    var_name="Investment",
-    value_name="Growth"
-)
+    fig_growth.update_layout(
+        template="plotly_white"
+    )
 
-
-fig_growth = px.line(
-    normalized_long,
-    x="Date",
-    y="Growth",
-    color="Investment",
-    title="Growth of ₹100 Investment"
-)
-
-fig_growth.update_layout(
-    template="plotly_white"
-)
-
-st.plotly_chart(
-    fig_growth,
-    use_container_width=True
-)
-
+    st.plotly_chart(
+        fig_growth,
+        use_container_width=True
+    )
 
 st.divider()
 
@@ -1052,23 +1790,28 @@ st.divider()
 st.header("🏆 Company Comparison")
 
 st.write(
-    "Compare return and volatility across all companies."
+    "Compare return and volatility "
+    "across all your selected companies."
 )
 
-
-if st.button("🔄 Generate Company Comparison"):
+if st.button(
+    "🔄 Generate Company Comparison"
+):
 
     comparison_results = []
 
     progress = st.progress(0)
 
-    total_companies = len(companies)
-
+    total_companies = len(
+        companies
+    )
 
     for index, (
         company_name,
         company_ticker
-    ) in enumerate(companies.items()):
+    ) in enumerate(
+        companies.items()
+    ):
 
         try:
 
@@ -1076,96 +1819,106 @@ if st.button("🔄 Generate Company Comparison"):
                 company_ticker
             )
 
-            company_data = filter_data_by_period(
-                company_data
+            company_data = (
+                filter_data_by_period(
+                    company_data
+                )
             )
 
-            company_close_temp = get_close_series(
+            temp_close = get_close_series(
                 company_data,
                 company_name
             )
 
+            if temp_close is not None:
 
-            if company_close_temp is None:
-                continue
-
-
-            first = float(
-                company_close_temp.iloc[0]
-            )
-
-            latest = float(
-                company_close_temp.iloc[-1]
-            )
-
-
-            company_return = (
-                (latest - first)
-                /
-                first
-            ) * 100
-
-
-            daily = (
-                company_close_temp
-                .pct_change()
-                .dropna()
-            )
-
-
-            company_volatility = (
-                daily.std()
-                *
-                np.sqrt(252)
-                *
-                100
-            )
-
-
-            comparison_results.append({
-
-                "Company": company_name,
-
-                "Ticker": company_ticker,
-
-                "Return (%)": round(
-                    company_return,
-                    2
-                ),
-
-                "Volatility (%)": round(
-                    company_volatility,
-                    2
+                first = float(
+                    temp_close.iloc[0]
                 )
 
-            })
+                latest = float(
+                    temp_close.iloc[-1]
+                )
 
+                company_return = (
+                    (
+                        latest
+                        -
+                        first
+                    )
+                    /
+                    first
+                ) * 100
+
+                daily = (
+                    temp_close
+                    .pct_change()
+                    .dropna()
+                )
+
+                company_volatility = (
+                    daily.std()
+                    *
+                    np.sqrt(252)
+                    *
+                    100
+                )
+
+                comparison_results.append(
+                    {
+                        "Company":
+                            company_name,
+
+                        "Ticker":
+                            company_ticker,
+
+                        "Return (%)":
+                            round(
+                                company_return,
+                                2
+                            ),
+
+                        "Volatility (%)":
+                            round(
+                                company_volatility,
+                                2
+                            )
+                    }
+                )
 
         except Exception:
             pass
 
-
         progress.progress(
             int(
-                ((index + 1) / total_companies)
-                * 100
+                (
+                    (index + 1)
+                    /
+                    total_companies
+                )
+                *
+                100
             )
         )
-
 
     progress.empty()
 
     st.session_state.comparison_results = (
-        pd.DataFrame(comparison_results)
+        pd.DataFrame(
+            comparison_results
+        )
     )
 
 
-if "comparison_results" in st.session_state:
+if (
+    "comparison_results"
+    in st.session_state
+):
 
     comparison_df = (
-        st.session_state.comparison_results
+        st.session_state
+        .comparison_results
     )
-
 
     if not comparison_df.empty:
 
@@ -1173,7 +1926,6 @@ if "comparison_results" in st.session_state:
             comparison_df,
             use_container_width=True
         )
-
 
         fig_compare = px.scatter(
             comparison_df,
@@ -1196,7 +1948,6 @@ if "comparison_results" in st.session_state:
             use_container_width=True
         )
 
-
 st.divider()
 
 
@@ -1207,13 +1958,13 @@ st.divider()
 st.header("💰 Debt Instrument")
 
 st.write(
-    f"Current instrument: **{debt_instrument_name}**"
+    f"Current instrument: "
+    f"**{debt_instrument_name}**"
 )
 
 st.caption(
     f"Ticker: {debt_instrument_ticker}"
 )
-
 
 if debt_close is not None:
 
@@ -1239,18 +1990,21 @@ if debt_close is not None:
         f"{debt_sharpe:.2f}"
     )
 
-
-    debt_chart = pd.DataFrame({
-        "Date": debt_close.index,
-        "Close Price": debt_close.values
-    })
-
+    debt_chart = pd.DataFrame(
+        {
+            "Date": debt_close.index,
+            "Close Price": debt_close.values
+        }
+    )
 
     fig_debt = px.line(
         debt_chart,
         x="Date",
         y="Close Price",
-        title=f"{debt_instrument_name} Price Trend"
+        title=(
+            f"{debt_instrument_name} "
+            "Price Trend"
+        )
     )
 
     fig_debt.update_layout(
@@ -1269,7 +2023,6 @@ else:
         "Please check the ticker."
     )
 
-
 st.divider()
 
 
@@ -1280,33 +2033,58 @@ st.divider()
 st.header("💼 Portfolio Builder")
 
 st.write(
-    "Select assets, assign weights, and analyze the historical "
-    "performance and risk characteristics of your portfolio."
+    "Select assets, assign weights, and analyze "
+    "the historical performance and risk "
+    "characteristics of your portfolio."
 )
 
-
-all_assets = list(companies.keys())
+all_assets = list(
+    companies.keys()
+)
 
 if debt_close is not None:
+
     all_assets.append(
         debt_instrument_name
     )
 
 
+default_assets = [
+    asset
+    for asset in
+    st.session_state.portfolio_assets
+    if asset in all_assets
+]
+
+if not default_assets:
+
+    default_assets = [
+        selected_company
+    ]
+
+
 selected_assets = st.multiselect(
     "Select Assets for Portfolio",
     all_assets,
-    default=[
-        selected_company
-    ]
+    default=default_assets
+)
+
+st.session_state.portfolio_assets = (
+    selected_assets
 )
 
 
 investment_amount = st.number_input(
     "Total Investment Amount (₹)",
     min_value=1000.0,
-    value=100000.0,
+    value=float(
+        st.session_state.portfolio_amount
+    ),
     step=5000.0
+)
+
+st.session_state.portfolio_amount = (
+    investment_amount
 )
 
 
@@ -1324,10 +2102,6 @@ if selected_assets:
 
     weights = {}
 
-    # --------------------------------------------------------
-    # EQUAL WEIGHT
-    # --------------------------------------------------------
-
     if allocation_method == "Equal Weight":
 
         equal_weight = (
@@ -1338,17 +2112,14 @@ if selected_assets:
 
         for asset in selected_assets:
 
-            weights[asset] = equal_weight
+            weights[asset] = (
+                equal_weight
+            )
 
         st.info(
             f"Each selected asset receives "
             f"{equal_weight:.2f}% allocation."
         )
-
-
-    # --------------------------------------------------------
-    # CUSTOM WEIGHT
-    # --------------------------------------------------------
 
     else:
 
@@ -1357,52 +2128,68 @@ if selected_assets:
         )
 
         weight_columns = st.columns(
-            min(3, len(selected_assets))
+            min(
+                3,
+                len(selected_assets)
+            )
         )
-
 
         for index, asset in enumerate(
             selected_assets
         ):
 
-            with weight_columns[
-                index % len(weight_columns)
-            ]:
-
-                weights[asset] = st.number_input(
-                    f"{asset} Weight (%)",
-                    min_value=0.0,
-                    max_value=100.0,
-                    value=round(
+            previous_weight = (
+                st.session_state
+                .portfolio_weights
+                .get(
+                    asset,
+                    round(
                         100
                         /
                         len(selected_assets),
                         2
-                    ),
-                    key=f"weight_{asset}"
+                    )
+                )
+            )
+
+            with weight_columns[
+                index % len(weight_columns)
+            ]:
+
+                weights[asset] = (
+                    st.number_input(
+                        f"{asset} Weight (%)",
+                        min_value=0.0,
+                        max_value=100.0,
+                        value=float(
+                            previous_weight
+                        ),
+                        key=f"weight_{asset}"
+                    )
                 )
 
+    st.session_state.portfolio_weights = (
+        weights
+    )
 
     total_weight = sum(
         weights.values()
     )
-
 
     st.metric(
         "Total Allocation",
         f"{total_weight:.2f}%"
     )
 
+    allocation_df = pd.DataFrame(
+        {
+            "Asset":
+                list(weights.keys()),
 
-    # --------------------------------------------------------
-    # PORTFOLIO ALLOCATION TABLE
-    # --------------------------------------------------------
-
-    allocation_df = pd.DataFrame({
-        "Asset": list(weights.keys()),
-        "Weight (%)": list(weights.values())
-    })
-
+            "Weight (%)":
+                list(weights.values())
+        }
+    )
 
     allocation_df[
         "Investment Amount (₹)"
@@ -1414,16 +2201,15 @@ if selected_assets:
         investment_amount
     )
 
-
     st.subheader(
         "Portfolio Allocation"
     )
 
+    portfolio_col1, portfolio_col2 = (
+        st.columns(2)
+    )
 
-    col1, col2 = st.columns(2)
-
-
-    with col1:
+    with portfolio_col1:
 
         fig_pie = px.pie(
             allocation_df,
@@ -1441,24 +2227,20 @@ if selected_assets:
             use_container_width=True
         )
 
-
-    with col2:
+    with portfolio_col2:
 
         st.dataframe(
             allocation_df,
             use_container_width=True
         )
 
-
-    # --------------------------------------------------------
-    # PORTFOLIO VALIDATION
-    # --------------------------------------------------------
-
-    if abs(total_weight - 100) > 0.01:
+    if abs(
+        total_weight - 100
+    ) > 0.01:
 
         st.warning(
             "Total allocation must equal 100% "
-            "before portfolio analysis can be calculated."
+            "before portfolio analysis."
         )
 
     else:
@@ -1466,11 +2248,6 @@ if selected_assets:
         st.success(
             "Portfolio allocation is valid."
         )
-
-
-        # ====================================================
-        # FETCH DATA FOR PORTFOLIO
-        # ====================================================
 
         if st.button(
             "📊 Analyze Portfolio Performance"
@@ -1484,22 +2261,18 @@ if selected_assets:
                 selected_assets
             )
 
-
             for index, asset in enumerate(
                 selected_assets
             ):
 
                 try:
 
-                    # EQUITY ASSET
                     if asset in companies:
 
-                        asset_ticker = (
-                            companies[asset]
-                        )
-
-                        asset_data = get_stock_data(
-                            asset_ticker
+                        asset_data = (
+                            get_stock_data(
+                                companies[asset]
+                            )
                         )
 
                         asset_data = (
@@ -1515,21 +2288,19 @@ if selected_assets:
                             )
                         )
 
-
-                    # DEBT ASSET
                     elif (
                         asset
                         ==
                         debt_instrument_name
                     ):
 
-                        asset_close = debt_close.copy()
-
+                        asset_close = (
+                            debt_close.copy()
+                        )
 
                     else:
 
                         asset_close = None
-
 
                     if asset_close is not None:
 
@@ -1539,11 +2310,8 @@ if selected_assets:
                             )
                         )
 
-
                 except Exception:
-
                     pass
-
 
                 progress_bar.progress(
                     int(
@@ -1557,18 +2325,13 @@ if selected_assets:
                     )
                 )
 
-
             progress_bar.empty()
-
-
-            # =================================================
-            # COMBINE PORTFOLIO DATA
-            # =================================================
 
             if len(portfolio_prices) < 1:
 
                 st.error(
-                    "Unable to fetch sufficient portfolio data."
+                    "Unable to fetch sufficient "
+                    "portfolio data."
                 )
 
             else:
@@ -1579,26 +2342,22 @@ if selected_assets:
                     join="inner"
                 ).dropna()
 
-
-                if len(portfolio_price_df) < 2:
+                if len(
+                    portfolio_price_df
+                ) < 2:
 
                     st.error(
-                        "Insufficient common historical data "
-                        "for the selected assets."
+                        "Insufficient common historical "
+                        "data for selected assets."
                     )
 
                 else:
-
-                    # =========================================
-                    # DAILY RETURNS
-                    # =========================================
 
                     portfolio_daily_returns = (
                         portfolio_price_df
                         .pct_change()
                         .dropna()
                     )
-
 
                     weight_vector = np.array(
                         [
@@ -1610,32 +2369,21 @@ if selected_assets:
                         ]
                     )
 
-
-                    # =========================================
-                    # PORTFOLIO DAILY RETURN
-                    # =========================================
-
                     portfolio_returns = (
                         portfolio_daily_returns
                         .dot(weight_vector)
                     )
 
-
-                    # =========================================
-                    # PORTFOLIO GROWTH
-                    # =========================================
-
                     portfolio_growth = (
-                        (1 + portfolio_returns)
+                        (
+                            1
+                            +
+                            portfolio_returns
+                        )
                         .cumprod()
                         *
                         investment_amount
                     )
-
-
-                    # =========================================
-                    # PORTFOLIO TOTAL RETURN
-                    # =========================================
 
                     portfolio_total_return = (
                         (
@@ -1647,11 +2395,6 @@ if selected_assets:
                         1
                     ) * 100
 
-
-                    # =========================================
-                    # PORTFOLIO VOLATILITY
-                    # =========================================
-
                     portfolio_volatility = (
                         portfolio_returns.std()
                         *
@@ -1660,24 +2403,15 @@ if selected_assets:
                         100
                     )
 
-
-                    # =========================================
-                    # PORTFOLIO ANNUALIZED RETURN
-                    # =========================================
-
                     portfolio_days = (
                         portfolio_growth.index[-1]
                         -
                         portfolio_growth.index[0]
                     ).days
 
-
                     portfolio_years = (
-                        portfolio_days
-                        /
-                        365
+                        portfolio_days / 365
                     )
-
 
                     if portfolio_years > 0:
 
@@ -1703,11 +2437,6 @@ if selected_assets:
                             portfolio_total_return
                         )
 
-
-                    # =========================================
-                    # PORTFOLIO SHARPE RATIO
-                    # =========================================
-
                     if portfolio_volatility != 0:
 
                         portfolio_sharpe = (
@@ -1720,25 +2449,20 @@ if selected_assets:
 
                         portfolio_sharpe = 0
 
-
-                    # =========================================
-                    # PORTFOLIO BETA
-                    # =========================================
-
                     portfolio_returns_named = (
                         portfolio_returns.rename(
                             "Portfolio"
                         )
                     )
 
-
                     benchmark_returns = (
                         benchmark_close
                         .pct_change()
                         .dropna()
-                        .rename("Market")
+                        .rename(
+                            "Market"
+                        )
                     )
-
 
                     portfolio_beta_data = pd.concat(
                         [
@@ -1749,13 +2473,11 @@ if selected_assets:
                         join="inner"
                     ).dropna()
 
-
                     market_variance_portfolio = (
                         portfolio_beta_data[
                             "Market"
                         ].var()
                     )
-
 
                     if (
                         market_variance_portfolio
@@ -1778,11 +2500,6 @@ if selected_assets:
 
                         portfolio_beta = 0
 
-
-                    # =========================================
-                    # PORTFOLIO CAPM RETURN
-                    # =========================================
-
                     portfolio_capm_return = (
                         risk_free_rate
                         +
@@ -1795,21 +2512,11 @@ if selected_assets:
                         )
                     )
 
-
-                    # =========================================
-                    # PORTFOLIO ALPHA
-                    # =========================================
-
                     portfolio_alpha = (
                         portfolio_annualized_return
                         -
                         portfolio_capm_return
                     )
-
-
-                    # =========================================
-                    # SAVE RESULTS
-                    # =========================================
 
                     st.session_state[
                         "portfolio_results"
@@ -1840,12 +2547,17 @@ if selected_assets:
                             portfolio_alpha,
 
                         "final_value":
-                            portfolio_growth.iloc[-1]
+                            portfolio_growth.iloc[-1],
+
+                        "investment_amount":
+                            investment_amount
                     }
+
+                    save_current_user_settings()
 
 
 # ============================================================
-# DISPLAY PORTFOLIO ANALYSIS
+# DISPLAY PORTFOLIO RESULTS
 # ============================================================
 
 if (
@@ -1853,15 +2565,15 @@ if (
     in st.session_state
 ):
 
-    results = st.session_state[
-        "portfolio_results"
-    ]
-
+    results = (
+        st.session_state[
+            "portfolio_results"
+        ]
+    )
 
     st.subheader(
         "📊 Portfolio Performance Analysis"
     )
-
 
     p1, p2, p3, p4 = st.columns(4)
 
@@ -1885,7 +2597,6 @@ if (
         f"{results['volatility']:.2f}%"
     )
 
-
     p5, p6, p7, p8 = st.columns(4)
 
     p5.metric(
@@ -1908,13 +2619,13 @@ if (
         f"{results['alpha']:.2f}%"
     )
 
+    portfolio_growth = (
+        results["growth"]
+    )
 
-    # ========================================================
-    # PORTFOLIO VS NIFTY 50
-    # ========================================================
-
-    portfolio_growth = results["growth"]
-
+    investment_amount_results = (
+        results["investment_amount"]
+    )
 
     benchmark_for_portfolio = (
         benchmark_close.reindex(
@@ -1922,13 +2633,11 @@ if (
         ).dropna()
     )
 
-
     common_dates = (
         portfolio_growth.index.intersection(
             benchmark_for_portfolio.index
         )
     )
-
 
     portfolio_common = (
         portfolio_growth.loc[
@@ -1936,13 +2645,11 @@ if (
         ]
     )
 
-
     benchmark_common = (
         benchmark_for_portfolio.loc[
             common_dates
         ]
     )
-
 
     if len(common_dates) > 1:
 
@@ -1951,22 +2658,21 @@ if (
             /
             benchmark_common.iloc[0]
             *
-            investment_amount
+            investment_amount_results
         )
 
+        portfolio_chart_df = pd.DataFrame(
+            {
+                "Date":
+                    common_dates,
 
-        portfolio_chart_df = pd.DataFrame({
+                "Portfolio":
+                    portfolio_common.values,
 
-            "Date": common_dates,
-
-            "Portfolio":
-                portfolio_common.values,
-
-            "NIFTY 50":
-                benchmark_growth.values
-
-        })
-
+                benchmark_name:
+                    benchmark_growth.values
+            }
+        )
 
         portfolio_chart_long = (
             portfolio_chart_df.melt(
@@ -1976,70 +2682,71 @@ if (
             )
         )
 
-
         fig_portfolio_growth = px.line(
             portfolio_chart_long,
             x="Date",
             y="Portfolio Value",
             color="Investment",
-            title="Portfolio Growth vs NIFTY 50"
+            title=(
+                f"Portfolio Growth vs "
+                f"{benchmark_name}"
+            )
         )
-
 
         fig_portfolio_growth.update_layout(
             template="plotly_white"
         )
-
 
         st.plotly_chart(
             fig_portfolio_growth,
             use_container_width=True
         )
 
-
-    # ========================================================
-    # PORTFOLIO INTERPRETATION
-    # ========================================================
-
     st.subheader(
         "📌 Portfolio Summary"
     )
 
-
-    if results["total_return"] > benchmark_return:
+    if (
+        results["total_return"]
+        >
+        benchmark_return
+    ):
 
         st.success(
-            "Your portfolio has outperformed "
-            "the NIFTY 50 over the selected period."
+            f"Your portfolio has outperformed "
+            f"{benchmark_name} over the "
+            f"selected period."
         )
 
     else:
 
         st.info(
-            "Your portfolio has underperformed "
-            "the NIFTY 50 over the selected period."
+            f"Your portfolio has underperformed "
+            f"{benchmark_name} over the "
+            f"selected period."
         )
-
 
     if results["beta"] > 1:
 
         st.warning(
-            "Portfolio beta is above 1, indicating that "
-            "the portfolio is historically more sensitive "
-            "to market movements than the NIFTY 50."
+            f"Portfolio beta is above 1, indicating "
+            f"greater historical sensitivity to "
+            f"{benchmark_name}."
         )
 
     elif results["beta"] < 1:
 
         st.success(
-            "Portfolio beta is below 1, indicating relatively "
-            "lower historical sensitivity to market movements."
+            "Portfolio beta is below 1, indicating "
+            "relatively lower historical sensitivity "
+            "to market movements."
         )
 
     else:
 
         st.info(
-            "Portfolio beta is approximately equal to 1."
+            "Portfolio beta is approximately "
+            "equal to 1."
         )
 
 
@@ -2053,20 +2760,21 @@ st.divider()
 st.header("📋 Market Data")
 
 st.write(
-    f"Historical market data for **{selected_company}**."
+    f"Historical market data for "
+    f"**{selected_company}**."
 )
-
 
 st.dataframe(
     filtered_data.tail(50),
     use_container_width=True
 )
 
-
 st.download_button(
     label="⬇️ Download Market Data as CSV",
     data=filtered_data.to_csv(),
-    file_name=f"{selected_company}_market_data.csv",
+    file_name=(
+        f"{selected_company}_market_data.csv"
+    ),
     mime="text/csv"
 )
 
@@ -2079,5 +2787,6 @@ st.divider()
 
 st.caption(
     "Investment Analytics Dashboard • "
-    "Equity • Debt • Risk • Return • Portfolio Analysis"
+    "Equity • Debt • Risk • Return • "
+    "Portfolio Analysis"
 )
